@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://narender-khola.github.io/kholalabs/sitemap.xml
+Sitemap: https://khola-labs.github.io/kholalabs/sitemap.xml
