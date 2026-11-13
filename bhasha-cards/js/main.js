@@ -1,6 +1,7 @@
 import { LANGS, TEMPLATES, templateCards, artFor } from './data.js';
 import { loadDecks, saveDecks, uid, putPhoto, delPhoto, photoURL, processImage } from './store.js';
 import { can, isPro, activate, deactivate, revalidate, PRICE, CHECKOUT_URL, FREE_LIMITS } from './entitlements.js';
+import { prime as primeAudio, prefetch as prefetchAudio, hasClip, say } from './audio.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s = '') => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -184,7 +185,9 @@ function editCard(d, i) {
           <label class="emoji-in">or emoji <input id="emoji" value="${esc(c.emoji || '')}" maxlength="8"></label>
         </div>
       </div>
-      <label>Word in ${L.name}<input id="word" value="${esc(c.word)}" lang="${d.lang}" style="font-family:${L.font};font-size:1.4rem" placeholder="${L.native}"></label>
+      <label>Word in ${L.name}<div class="row word-row"><input id="word" value="${esc(c.word)}" lang="${d.lang}" style="font-family:${L.font};font-size:1.4rem" placeholder="${L.native}">
+      <button type="button" class="btn" id="hear" aria-label="Hear the word">🔊</button></div>
+      <small class="voice-note" id="voiceNote"></small></label>
       <label>How to say it (Latin letters)<input id="translit" value="${esc(c.translit)}" placeholder="e.g. naani"></label>
       <label>Meaning in English<input id="meaning" value="${esc(c.meaning)}" placeholder="e.g. Grandmother"></label>
       <div class="row"><button type="button" class="btn primary" id="save">Save</button>
@@ -192,7 +195,11 @@ function editCard(d, i) {
     </form>`;
   s.showModal();
   const mini = async () => { $('#mini', s).innerHTML = await cardHTML({ ...c, word: $('#word', s).value, translit: $('#translit', s).value, meaning: $('#meaning', s).value, emoji: $('#emoji', s).value }, d.lang); };
-  mini(); ['word', 'translit', 'meaning', 'emoji'].forEach((k) => $('#' + k, s).addEventListener('input', mini));
+  const voiceNote = () => { const w = $('#word', s).value.trim(); $('#voiceNote', s).textContent = !w ? '' : hasClip(d.lang, w) ? '🎙 Native-voice recording available' : 'Your own word: read by this phone’s voice'; };
+  mini(); voiceNote(); primeAudio(d.lang).then(voiceNote);
+  ['word', 'translit', 'meaning', 'emoji'].forEach((k) => $('#' + k, s).addEventListener('input', mini));
+  $('#word', s).addEventListener('input', voiceNote);
+  $('#hear', s).onclick = () => sayCard(d.lang, { word: $('#word', s).value.trim(), translit: $('#translit', s).value.trim() });
   $('#file', s).onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     if (!c.photoId && !gate('addPhoto', { photoCount: photoCount() })) return;
@@ -213,42 +220,42 @@ function editCard(d, i) {
   s.onclose = () => deckView(d.id);
 }
 
+/** Plays a card's word (recorded clip, else device voice) and explains any fallback once. */
+async function sayCard(lang, c) {
+  if (!c.word) return toast('Type a word first');
+  const r = await say(lang, c);
+  if (r.source === 'none') toast(r.note || 'Could not play audio on this device');
+  else if (r.source === 'tts' && r.note && !sayCard.warned) { sayCard.warned = true; toast(r.note); }
+}
+
 async function practice(id) {
   const d = deckById(id); if (!d || !d.cards.length) return (location.hash = '#/');
   let i = 0, flipped = false;
-  // Chrome loads voices async; wait for them, prefer Google (better quality) voices
-  const loadVoices = () => new Promise((res) => {
-    const vs = speechSynthesis.getVoices(); if (vs.length) return res(vs);
-    speechSynthesis.addEventListener('voiceschanged', () => res(speechSynthesis.getVoices()), { once: true });
-    setTimeout(() => res(speechSynthesis.getVoices()), 1500);
-  });
-  const voices = async () => (await loadVoices())
-    .filter((v) => v.lang.replace('_', '-').startsWith(LANGS[d.lang].tts.slice(0, 2)))
-    .sort((a, b) => /google/i.test(b.name) - /google/i.test(a.name));
+  await primeAudio(d.lang);                     // recorded pronunciations for built-in words
   const render = async () => {
     const c = d.cards[i];
+    const recorded = hasClip(d.lang, c.word);
     view.innerHTML = `
       <div class="bar"><a href="#/deck/${d.id}" class="back">‹ ${esc(d.title)}</a><span class="count">${i + 1} / ${d.cards.length}</span></div>
-      <div class="practice ${flipped ? 'flipped' : ''}" id="pc">${await cardHTML(c, d.lang, { translit: flipped, english: flipped })}
-        <p class="tap">${flipped ? '' : 'Tap to reveal'}</p></div>
+      <div class="practice ${flipped ? 'flipped' : ''}" id="pc" role="button" tabindex="0" aria-label="${flipped ? 'Card revealed. Tap to hide' : 'Tap to reveal the meaning'}">${await cardHTML(c, d.lang, { translit: flipped, english: flipped })}
+        <p class="tap">${flipped ? (recorded ? '<span class="voice-tag">🎙 Native-voice recording</span>' : '') : 'Tap to reveal'}</p></div>
       <div class="actions three">
-        <button class="btn" id="prev" ${i === 0 ? 'disabled' : ''}>‹ Prev</button>
-        <button class="btn primary" id="say">🔊 Say it</button>
-        <button class="btn" id="next">${i === d.cards.length - 1 ? 'Done ✓' : 'Next ›'}</button>
+        <button class="btn" id="prev" ${i === 0 ? 'disabled' : ''} aria-label="Previous card">‹ Prev</button>
+        <button class="btn primary" id="say" aria-label="Say the word">🔊 Say it</button>
+        <button class="btn" id="next" aria-label="${i === d.cards.length - 1 ? 'Finish' : 'Next card'}">${i === d.cards.length - 1 ? 'Done ✓' : 'Next ›'}</button>
       </div>`;
-    $('#pc').onclick = () => { flipped = !flipped; render(); };
+    prefetchAudio(d.lang, c.word);
+    if (d.cards[i + 1]) prefetchAudio(d.lang, d.cards[i + 1].word);
+    const flip = () => { flipped = !flipped; render(); };
+    $('#pc').onclick = flip;
+    $('#pc').onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } };
     $('#prev').onclick = () => { i--; flipped = false; render(); };
     $('#next').onclick = () => { if (i === d.cards.length - 1) { toast('Shabaash! 🎉 Deck complete'); location.hash = `#/deck/${d.id}`; } else { i++; flipped = false; render(); } };
-    $('#say').onclick = async () => {
-      if (!('speechSynthesis' in window)) return toast('Speech not supported on this device');
-      const u = new SpeechSynthesisUtterance(c.word); u.lang = LANGS[d.lang].tts;
-      const v = (await voices())[0];
-      if (v) u.voice = v;
-      else { if (c.translit) u.text = c.translit; toast(`No ${LANGS[d.lang].name} voice on this device — reading transliteration`); }
-      u.onerror = (e) => e.error !== 'interrupted' && e.error !== 'canceled' && toast('Could not play audio: ' + e.error);
-      speechSynthesis.cancel(); speechSynthesis.resume(); // resume() unsticks Chrome's queue after idle
-      setTimeout(() => speechSynthesis.speak(u), 50);
-    };
+    $('#say').onclick = () => sayCard(d.lang, c);
+  };
+  view.onkeydown = (e) => {
+    if (e.target.closest('input,textarea')) return;
+    if (e.key === 'ArrowRight') $('#next')?.click(); else if (e.key === 'ArrowLeft') { const b = $('#prev'); if (b && !b.disabled) b.click(); }
   };
   let x0 = null;
   view.ontouchstart = (e) => (x0 = e.touches[0].clientX);
